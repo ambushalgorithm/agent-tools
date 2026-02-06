@@ -40,6 +40,53 @@ Or set environment variables directly.
 
 ## Modules
 
+### Environment Check
+
+```bash
+# Check what's configured
+python -m agent_tools check
+
+# or after pip install:
+agent-tools check
+```
+
+### Tool Discovery
+
+```python
+from agent_tools import list_tools, get_tool, discover
+
+# List all tools
+for tool in list_tools():
+    print(f"{tool.name}: {tool.description}")
+
+# Only show configured/ready tools
+for tool in list_tools(only_available=True):
+    print(f"✅ {tool.name} is ready")
+
+# Get discovery info as dict
+info = discover()
+print(f"{info['available']}/{info['total']} tools ready")
+
+# Get a tool class dynamically
+OllamaVisionClient = get_tool("vision.ollama")
+client = OllamaVisionClient.from_env()
+```
+
+### CLI Usage
+
+```bash
+# Human-readable list
+agent-tools list
+
+# Machine-readable JSON
+agent-tools json
+
+# Check environment
+agent-tools check
+```
+
+## Modules
+
 ### `agent_tools.vision`
 
 Vision/image analysis utilities supporting multiple providers.
@@ -92,11 +139,13 @@ pytest tests/
 agent-tools/
 ├── src/agent_tools/       # Main package
 │   ├── __init__.py
+│   ├── cli.py            # CLI for tool discovery
+│   ├── registry.py       # Auto-discovery registry
 │   ├── vision/            # Vision/analysis tools
 │   │   ├── __init__.py
-│   │   ├── venice.py      # Venice AI client
+│   │   ├── base.py        # Abstract interfaces
 │   │   ├── ollama.py      # Ollama Cloud client
-│   │   └── base.py        # Abstract interfaces
+│   │   └── venice.py      # Venice AI client
 │   └── utils/             # Shared utilities
 │       ├── __init__.py
 │       └── config.py      # Environment/config helpers
@@ -105,6 +154,41 @@ agent-tools/
 ├── docs/                  # Additional documentation
 ├── pyproject.toml         # Package configuration
 └── README.md
+```
+
+## Auto-Discovery
+
+The package supports runtime tool discovery — useful for agents that need to:
+
+1. **Introspect** what's available without hardcoding imports
+2. **Check configuration** before attempting to use a tool
+3. **Dynamically select** the best available tool for a task
+
+### Programmatic Discovery
+
+```python
+from agent_tools import list_tools, get_tool, discover
+
+# List all tools
+for tool in list_tools():
+    print(f"{tool.name}: {tool.description}")
+
+# Check what's configured
+for tool in list_tools(only_available=True):
+    print(f"✅ {tool.name} ready")
+
+# Get full discovery dict
+info = discover()
+print(f"{info['available']}/{info['total']} tools configured")
+```
+
+### CLI Discovery
+
+```bash
+# After pip install:
+agent-tools list      # Human-readable
+agent-tools json      # Machine-readable
+agent-tools check     # Environment verification
 ```
 
 ## License
