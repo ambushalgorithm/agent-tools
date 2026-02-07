@@ -63,13 +63,24 @@ def format_timestamp(ts_ms):
 
 def check_health(session):
     """Check health status of a sub-agent session."""
-    key = session.get("sessionKey", "unknown")
+    key = session.get("key", session.get("sessionKey", "unknown"))
     kind = session.get("kind", "unknown")
     updated_at = session.get("updatedAt", 0)
     total_tokens = session.get("totalTokens", 0)
     system_sent = session.get("systemSent", False)
     aborted = session.get("abortedLastRun", False)
-    display = session.get("displayName", key)
+    session_id = session.get("sessionId", "-")[:8]  # Short ID
+    
+    # Build display name from key (extract channel/thread name)
+    display = key
+    if "discord:channel:" in key:
+        display = key.split("discord:channel:")[-1][:35]
+    elif "cron:" in key:
+        display = "cron:" + key.split("cron:")[-1][:30]
+    elif "main" in key:
+        display = "main"
+    else:
+        display = key[:40]
 
     now = datetime.now().timestamp() * 1000
     idle_ms = now - updated_at
@@ -96,6 +107,8 @@ def check_health(session):
 
     return {
         "key": key,
+        "id": session_id,
+        "kind": kind,
         "display": display,
         "status": status,
         "idle_min": idle_min,
@@ -111,9 +124,9 @@ def print_report(sessions):
         print("✅ No active sub-agents found")
         return
 
-    print(f"\n🤖 Sub-Agent Health Report ({len(sessions)} total)\n")
-    print(f"{'Session':<45} {'Status':<10} {'Idle':<8} {'Tokens':<8} Issues")
-    print("-" * 90)
+    print(f"\n🤖 Session Health Report ({len(sessions)} total)\n")
+    print(f"{'Session ID':<12} {'Type':<8} {'Status':<10} {'Idle':<8} {'Tokens':<8} {'Channel/Key':<30} Issues")
+    print("-" * 95)
 
     for s in sorted(sessions, key=lambda x: x.get("updatedAt", 0), reverse=True):
         health = check_health(s)
@@ -124,11 +137,11 @@ def print_report(sessions):
             "suspect": "🟠"
         }.get(health["status"], "⚪")
 
-        short_name = health["display"][:40] + "..." if len(health["display"]) > 40 else health["display"]
+        short_name = health["display"][:28] + ".." if len(health["display"]) > 30 else health["display"]
         issues_str = ", ".join(health["issues"]) if health["issues"] else "-"
 
-        print(f"{status_emoji} {short_name:<43} {health['status']:<8} "
-              f"{health['idle_min']:.1f}m  {health['total_tokens']:<8} {issues_str}")
+        print(f"{status_emoji} {health['id']:<10} {health['kind']:<6} {health['status']:<8} "
+              f"{health['idle_min']:.1f}m  {health['total_tokens']:<6} {short_name:<30} {issues_str}")
 
 
 def watch_mode():
