@@ -318,12 +318,16 @@ def watch_mode(subagents_only=False, channels_only=False, show_details=False, st
     else:
         kind_label = "sessions"
     print(f"👀 Watching {kind_label} (Ctrl+C to exit)...")
-    while True:
-        subprocess.run(["clear"])
-        sessions = get_sessions(active_minutes=120, subagents_only=subagents_only, channels_only=channels_only)
-        print_report(sessions, show_details=show_details, stuck_threshold=stuck_threshold, channels_only=channels_only)
-        print(f"\n⏱️  Last check: {datetime.now().strftime('%H:%M:%S')} | Stuck threshold: {stuck_threshold}min")
-        time.sleep(30)
+    try:
+        while True:
+            subprocess.run(["clear"])
+            sessions = get_sessions(active_minutes=120, subagents_only=subagents_only, channels_only=channels_only)
+            print_report(sessions, show_details=show_details, stuck_threshold=stuck_threshold, channels_only=channels_only)
+            print(f"\n⏱️  Last check: {datetime.now().strftime('%H:%M:%S')} | Stuck threshold: {stuck_threshold}min")
+            time.sleep(30)
+    except KeyboardInterrupt:
+        print("\n👋 Exiting watch mode.")
+        sys.exit(0)
 
 
 def main():
