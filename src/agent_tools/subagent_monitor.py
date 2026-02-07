@@ -125,10 +125,11 @@ def print_report(sessions):
         return
 
     print(f"\n🤖 Session Health Report ({len(sessions)} total)\n")
-    # Header with fixed widths
-    print(f"{'ID':<10} {'Kind':<6} {'Status':<8} {'Idle':>7} {'Tokens':>9} {'Channel/Key':<28} Issues")
-    # Separator matching column widths: 10 + 6 + 8 + 7 + 8 + 28 + 6 (for "Issues")
-    print("-" * 83)
+    # Header with fixed widths - total 80 chars to match separator
+    header = f"{'ID':<10} {'Kind':<6} {'Status':<8} {'Idle':>7} {'Tokens':>9} {'Channel/Key':<28} Issues"
+    print(header)
+    # Separator matching header length exactly
+    print("-" * len(header))
 
     for s in sorted(sessions, key=lambda x: x.get("updatedAt", 0), reverse=True):
         health = check_health(s)
