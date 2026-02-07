@@ -125,7 +125,8 @@ def print_report(sessions):
         return
 
     print(f"\n🤖 Session Health Report ({len(sessions)} total)\n")
-    print(f"{'Session ID':<12} {'Type':<8} {'Status':<10} {'Idle':<8} {'Tokens':<8} {'Channel/Key':<30} Issues")
+    # Header with fixed widths
+    print(f"{'ID':<10} {'Kind':<6} {'Status':<8} {'Idle':>7} {'Tokens':>9} {'Channel/Key':<28} Issues")
     print("-" * 95)
 
     for s in sorted(sessions, key=lambda x: x.get("updatedAt", 0), reverse=True):
@@ -137,11 +138,22 @@ def print_report(sessions):
             "suspect": "🟠"
         }.get(health["status"], "⚪")
 
-        short_name = health["display"][:28] + ".." if len(health["display"]) > 30 else health["display"]
+        short_name = health["display"][:26] + ".." if len(health["display"]) > 28 else health["display"]
         issues_str = ", ".join(health["issues"]) if health["issues"] else "-"
 
-        print(f"{status_emoji} {health['id']:<10} {health['kind']:<6} {health['status']:<8} "
-              f"{health['idle_min']:.1f}m  {health['total_tokens']:<6} {short_name:<30} {issues_str}")
+        # Format idle time
+        idle_str = f"{health['idle_min']:.1f}m"
+        tok_str = f"{health['total_tokens']}"
+
+        # Build columns with proper alignment
+        line = (f"{status_emoji} {health['id']:<8} "
+                f"{health['kind']:<6} "
+                f"{health['status']:<8} "
+                f"{idle_str:>7} "
+                f"{tok_str:>8} "
+                f"{short_name:<28} "
+                f"{issues_str}")
+        print(line)
 
 
 def watch_mode():
