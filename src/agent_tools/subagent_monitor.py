@@ -3,9 +3,10 @@
 
 Checks for hung, stalled, or crashed sub-agents.
 Usage:
-    python3 subagent_monitor.py           # Check all active sub-agents
-    python3 subagent_monitor.py --watch   # Watch mode (check every 30s)
-    python3 subagent_monitor.py --kill-stuck  # Kill agents stuck >5 min
+    python3 subagent_monitor.py              # Check all active sessions
+    python3 subagent_monitor.py --subagents-only   # Show only isolated (spawned) agents
+    python3 subagent_monitor.py --watch      # Watch mode (check every 30s)
+    python3 subagent_monitor.py --details    # Show task prompt and full details
 """
 
 import subprocess
@@ -15,33 +16,42 @@ import time
 from datetime import datetime, timedelta
 
 
-def get_subagents(active_minutes=60):
-    """Get list of isolated (sub-agent) sessions."""
-    result = subprocess.run(
-        ["openclaw", "sessions", "list", "--kinds", "isolated", "other",
-         "--active-minutes", str(active_minutes), "--json"],
-        capture_output=True, text=True
-    )
+def get_sessions(active_minutes=60, subagents_only=False):
+    """Get list of sessions, optionally filtering for isolated (sub-agent) only."""
+    # Build command - CLI accepts multiple --kinds flags or comma-separated
+    cmd = ["openclaw", "sessions", "list", "--active-minutes", str(active_minutes), "--json"]
+    
+    if subagents_only:
+        # Try filtering for isolated only - use the kinds filter
+        # CLI format: --kinds isolated (may need adjustment based on actual CLI behavior)
+        cmd.extend(["--kinds", "isolated"])
+    
+    result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
         print(f"Error: {result.stderr}", file=sys.stderr)
         return []
     try:
         data = json.loads(result.stdout)
-        return data.get("sessions", [])
+        sessions = data.get("sessions", [])
+        # Post-filter: if subagents_only, ensure we only return isolated kinds
+        if subagents_only:
+            sessions = [s for s in sessions if s.get("kind") == "isolated"]
+        return sessions
     except json.JSONDecodeError:
-        # Try parsing line-delimited JSON
         sessions = []
         for line in result.stdout.strip().split("\n"):
             if line:
                 try:
-                    sessions.append(json.loads(line))
+                    s = json.loads(line)
+                    if not subagents_only or s.get("kind") == "isolated":
+                        sessions.append(s)
                 except:
                     pass
         return sessions
 
 
-def get_session_history(session_key, limit=3):
-    """Get last N messages from a session."""
+def get_session_history(session_key, limit=5):
+    """Get messages from a session to extract task/prompt."""
     result = subprocess.run(
         ["openclaw", "sessions", "history", session_key, "--limit", str(limit), "--json"],
         capture_output=True, text=True
@@ -55,23 +65,96 @@ def get_session_history(session_key, limit=3):
         return None
 
 
+def extract_task_prompt(messages):
+    """Extract the initial task prompt from session history.
+    
+    For sub-agents spawned via sessions_spawn, the first user message
+    is the task instruction. We return a preview of that.
+    """
+    if not messages:
+        return "-"
+    
+    # Find first user message (skip system prompts)
+    for msg in messages:
+        if msg.get("role") == "user":
+            content = msg.get("content", "")
+            if isinstance(content, list):
+                # Handle complex content structure
+                text_parts = []
+                for c in content:
+                    if isinstance(c, dict) and c.get("type") == "text":
+                        text_parts.append(c.get("text", ""))
+                content = " ".join(text_parts)
+            
+            # Truncate and clean up
+            preview = content[:80].replace("\n", " ")
+            if len(content) > 80:
+                preview += "..."
+            return preview
+    
+    return "-"
+
+
+def extract_model(messages):
+    """Extract the model being used from the last assistant message."""
+    if not messages:
+        return "-"
+    
+    # Look for the last assistant message with model info
+    for msg in reversed(messages):
+        if msg.get("role") == "assistant":
+            model = msg.get("model", "-")
+            if model and model != "-":
+                # Shorten model name for display
+                if "/" in model:
+                    model = model.split("/")[-1]
+                if len(model) > 20:
+                    model = model[:17] + "..."
+                return model
+    
+    return "-"
+
+
 def format_timestamp(ts_ms):
     """Convert epoch ms to readable time."""
     dt = datetime.fromtimestamp(ts_ms / 1000)
     return dt.strftime("%H:%M:%S")
 
 
-def check_health(session):
-    """Check health status of a sub-agent session."""
+def format_duration(minutes):
+    """Format duration in a readable way."""
+    if minutes < 1:
+        return f"{minutes*60:.0f}s"
+    elif minutes < 60:
+        return f"{minutes:.1f}m"
+    else:
+        hours = minutes / 60
+        return f"{hours:.1f}h"
+
+
+def check_health(session, stuck_threshold=10):
+    """Check health status of a sub-agent session.
+    
+    Args:
+        stuck_threshold: Minutes of idle time before marking as 'suspect'
+    """
     key = session.get("key", session.get("sessionKey", "unknown"))
     kind = session.get("kind", "unknown")
     updated_at = session.get("updatedAt", 0)
     total_tokens = session.get("totalTokens", 0)
     system_sent = session.get("systemSent", False)
     aborted = session.get("abortedLastRun", False)
-    session_id = session.get("sessionId", "-")[:8]  # Short ID
+    session_id = session.get("sessionId", "-")[:8]
+    model = session.get("model", "-")
     
-    # Build display name from key (extract channel/thread name)
+    # Shorten model name
+    if model and model != "-":
+        if "/" in model:
+            model = model.split("/")[-1]
+        if len(model) > 18:
+            model = model[:15] + "..."
+    
+    # Build display name
     display = key
     if "discord:channel:" in key:
         display = key.split("discord:channel:")[-1][:35]
@@ -90,19 +173,18 @@ def check_health(session):
     status = "healthy"
 
     if aborted:
-        issues.append("last run was aborted/crashed")
+        issues.append("crashed/aborted")
         status = "crashed"
 
     if not system_sent and total_tokens == 0:
-        issues.append("never started (no system prompt)")
+        issues.append("never started (no system)")
         status = "stalled"
 
     if idle_min > 5 and total_tokens > 0:
-        issues.append(f"idle {idle_min:.1f} min")
-        # Could be done, could be stuck
+        issues.append(f"idle {format_duration(idle_min)}")
 
-    if idle_min > 10:
-        issues.append(f"very idle ({idle_min:.1f} min)")
+    if idle_min > stuck_threshold:
+        issues.append(f"STUCK >{stuck_threshold}min")
         status = "suspect"
 
     return {
@@ -113,37 +195,66 @@ def check_health(session):
         "status": status,
         "idle_min": idle_min,
         "total_tokens": total_tokens,
+        "model": model,
         "issues": issues,
-        "last_update": format_timestamp(updated_at)
+        "last_update": format_timestamp(updated_at),
+        "system_sent": system_sent
     }
 
 
-def print_report(sessions):
+def print_report(sessions, show_details=False, stuck_threshold=10):
     """Print formatted health report."""
     if not sessions:
-        print("✅ No active sub-agents found")
+        kind_filter = "sub-agents" if show_details else "sessions"
+        print(f"✅ No active {kind_filter} found")
         return
 
-    print(f"\n🤖 Session Health Report ({len(sessions)} total)\n")
-    # Header with fixed widths
-    header = f"{'ID':<10} {'Kind':<6} {'Status':<8} {'Idle':>7} {'Tokens':>9} {'Channel/Key':<28} Issues"
+    kind_label = "Sub-Agent" if show_details else "Session"
+    print(f"\n🤖 {kind_label} Health Report ({len(sessions)} total)\n")
     
-    # Calculate max width needed (account for long issue strings)
+    # Base header columns
+    base_header = f"{'ID':<10} {'Kind':<6} {'Status':<8} {'Idle':>7} {'Tokens':>8} {'Model':<18}"
+    
+    if show_details:
+        header = base_header + f" {'Task Preview':<42}"
+    else:
+        header = base_header + f" {'Channel/Key':<28} Issues"
+    
+    # Calculate max width
     max_width = len(header)
     health_data = []
+    
     for s in sorted(sessions, key=lambda x: x.get("updatedAt", 0), reverse=True):
-        health = check_health(s)
-        health_data.append(health)
-        short_name = health["display"][:26] + ".." if len(health["display"]) > 28 else health["display"]
-        issues_str = ", ".join(health["issues"]) if health["issues"] else "-"
-        line = (f"🟢 {health['id']:<8} {health['kind']:<6} {health['status']:<8} "
-                f"{health['idle_min']:.1f}m  {health['total_tokens']:<8} {short_name:<28} {issues_str}")
+        health = check_health(s, stuck_threshold)
+        
+        # Get additional details if requested
+        task_preview = "-"
+        if show_details:
+            history = get_session_history(health["key"], limit=3)
+            task_preview = extract_task_prompt(history)
+            # Update model from history if not in session data
+            if health["model"] == "-" and history:
+                health["model"] = extract_model(history)
+        
+        health_data.append((health, task_preview))
+        
+        # Calculate line length for separator
+        if show_details:
+            line = (f"🟢 {health['id']:<8} {health['kind']:<6} {health['status']:<8} "
+                    f"{format_duration(health['idle_min']):>7} {health['total_tokens']:<8} "
+                    f"{health['model']:<18} {task_preview:<42}")
+        else:
+            issues_str = ", ".join(health["issues"]) if health["issues"] else "-"
+            short_name = health["display"][:26] + ".." if len(health["display"]) > 28 else health["display"]
+            line = (f"🟢 {health['id']:<8} {health['kind']:<6} {health['status']:<8} "
+                    f"{format_duration(health['idle_min']):>7} {health['total_tokens']:<8} "
+                    f"{health['model']:<18} {short_name:<28} {issues_str}")
         max_width = max(max_width, len(line))
     
     print(header)
     print("-" * max_width)
 
-    for health in health_data:
+    for health, task_preview in health_data:
         status_emoji = {
             "healthy": "🟢",
             "crashed": "🔴",
@@ -151,53 +262,84 @@ def print_report(sessions):
             "suspect": "🟠"
         }.get(health["status"], "⚪")
 
-        short_name = health["display"][:26] + ".." if len(health["display"]) > 28 else health["display"]
-        issues_str = ", ".join(health["issues"]) if health["issues"] else "-"
+        idle_str = format_duration(health["idle_min"])
+        tok_str = str(health["total_tokens"])
 
-        # Format idle time
-        idle_str = f"{health['idle_min']:.1f}m"
-        tok_str = f"{health['total_tokens']}"
-
-        # Build columns with proper alignment
-        line = (f"{status_emoji} {health['id']:<8} "
-                f"{health['kind']:<6} "
-                f"{health['status']:<8} "
-                f"{idle_str:>7} "
-                f"{tok_str:>8} "
-                f"{short_name:<28} "
-                f"{issues_str}")
+        if show_details:
+            # Detailed view: Task preview instead of channel key
+            line = (f"{status_emoji} {health['id']:<8} "
+                    f"{health['kind']:<6} "
+                    f"{health['status']:<8} "
+                    f"{idle_str:>7} "
+                    f"{tok_str:>8} "
+                    f"{health['model']:<18} "
+                    f"{task_preview:<42}")
+        else:
+            # Standard view: Channel key + issues
+            short_name = health["display"][:26] + ".." if len(health["display"]) > 28 else health["display"]
+            issues_str = ", ".join(health["issues"]) if health["issues"] else "-"
+            
+            line = (f"{status_emoji} {health['id']:<8} "
+                    f"{health['kind']:<6} "
+                    f"{health['status']:<8} "
+                    f"{idle_str:>7} "
+                    f"{tok_str:>8} "
+                    f"{health['model']:<18} "
+                    f"{short_name:<28} "
+                    f"{issues_str}")
         print(line)
 
 
-def watch_mode():
+def watch_mode(subagents_only=False, show_details=False, stuck_threshold=10):
     """Continuous monitoring mode."""
-    print("👀 Watching sub-agents (Ctrl+C to exit)...")
+    kind_label = "sub-agents" if subagents_only else "sessions"
+    print(f"👀 Watching {kind_label} (Ctrl+C to exit)...")
     while True:
         subprocess.run(["clear"])
-        sessions = get_subagents(active_minutes=120)
-        print_report(sessions)
-        print(f"\n⏱️  Last check: {datetime.now().strftime('%H:%M:%S')}")
+        sessions = get_sessions(active_minutes=120, subagents_only=subagents_only)
+        print_report(sessions, show_details=show_details, stuck_threshold=stuck_threshold)
+        print(f"\n⏱️  Last check: {datetime.now().strftime('%H:%M:%S')} | Stuck threshold: {stuck_threshold}min")
         time.sleep(30)
 
 
 def main():
-    if len(sys.argv) > 1 and sys.argv[1] == "--watch":
-        watch_mode()
-    elif len(sys.argv) > 1 and sys.argv[1] == "--kill-stuck":
-        sessions = get_subagents(active_minutes=120)
-        stuck = [s for s in sessions if check_health(s)["status"] in ("crashed", "stalled", "suspect")]
-        if not stuck:
-            print("✅ No stuck sub-agents to kill")
-            return
-        print(f"🔪 Killing {len(stuck)} stuck sub-agents...")
-        for s in stuck:
-            key = s.get("sessionKey")
-            print(f"  → {key}")
-            subprocess.run(["openclaw", "sessions", "cancel", key], capture_output=True)
-        print("Done.")
+    args = sys.argv[1:]
+    
+    # Parse flags
+    subagents_only = "--subagents-only" in args
+    show_details = "--details" in args
+    watch = "--watch" in args
+    
+    # Stuck threshold config (default 10 min, override with --stuck-threshold N)
+    stuck_threshold = 10
+    if "--stuck-threshold" in args:
+        try:
+            idx = args.index("--stuck-threshold")
+            stuck_threshold = int(args[idx + 1])
+        except (IndexError, ValueError):
+            print("Warning: --stuck-threshold requires a number, using default 10min")
+    
+    if "--help" in args or "-h" in args:
+        print(__doc__)
+        print("""
+Options:
+    --subagents-only        Show only isolated (spawned) sub-agents
+    --details               Show task prompt preview and model for each agent
+    --watch                 Continuous monitoring mode (refreshes every 30s)
+    --stuck-threshold N     Set idle minutes before marking as stuck (default: 10)
+
+Examples:
+    openclaw-subagent --subagents-only                    # See only spawned agents
+    openclaw-subagent --subagents-only --details          # See what each agent is doing
+    openclaw-subagent --watch --stuck-threshold 30        # Alert if idle >30min
+""")
+        return
+    
+    if watch:
+        watch_mode(subagents_only=subagents_only, show_details=show_details, stuck_threshold=stuck_threshold)
     else:
-        sessions = get_subagents(active_minutes=60)
-        print_report(sessions)
+        sessions = get_sessions(active_minutes=60, subagents_only=subagents_only)
+        print_report(sessions, show_details=show_details, stuck_threshold=stuck_threshold)
 
 
 if __name__ == "__main__":
