@@ -16,8 +16,8 @@ import time
 from datetime import datetime, timedelta
 
 
-def get_sessions(active_minutes=60, subagents_only=False):
-    """Get list of sessions, optionally filtering for isolated (sub-agent) only."""
+def get_sessions(active_minutes=60, subagents_only=False, channels_only=False):
+    """Get list of sessions, optionally filtering for isolated (sub-agent) or channels only."""
     # Build command - CLI accepts multiple --kinds flags or comma-separated
     cmd = ["openclaw", "sessions", "list", "--active-minutes", str(active_minutes), "--json"]
     
@@ -25,6 +25,9 @@ def get_sessions(active_minutes=60, subagents_only=False):
         # Try filtering for isolated only - use the kinds filter
         # CLI format: --kinds isolated (may need adjustment based on actual CLI behavior)
         cmd.extend(["--kinds", "isolated"])
+    elif channels_only:
+        # Filter for group (channel) sessions
+        cmd.extend(["--kinds", "group"])
     
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
@@ -33,9 +36,11 @@ def get_sessions(active_minutes=60, subagents_only=False):
     try:
         data = json.loads(result.stdout)
         sessions = data.get("sessions", [])
-        # Post-filter: if subagents_only, ensure we only return isolated kinds
+        # Post-filter: apply kind filters
         if subagents_only:
             sessions = [s for s in sessions if s.get("kind") == "isolated"]
+        elif channels_only:
+            sessions = [s for s in sessions if s.get("kind") == "group"]
         return sessions
     except json.JSONDecodeError:
         sessions = []
@@ -43,7 +48,11 @@ def get_sessions(active_minutes=60, subagents_only=False):
             if line:
                 try:
                     s = json.loads(line)
-                    if not subagents_only or s.get("kind") == "isolated":
+                    if subagents_only and s.get("kind") == "isolated":
+                        sessions.append(s)
+                    elif channels_only and s.get("kind") == "group":
+                        sessions.append(s)
+                    elif not subagents_only and not channels_only:
                         sessions.append(s)
                 except:
                     pass
@@ -202,14 +211,24 @@ def check_health(session, stuck_threshold=10):
     }
 
 
-def print_report(sessions, show_details=False, stuck_threshold=10):
+def print_report(sessions, show_details=False, stuck_threshold=10, channels_only=False):
     """Print formatted health report."""
     if not sessions:
-        kind_filter = "sub-agents" if show_details else "sessions"
+        if channels_only:
+            kind_filter = "channels"
+        elif show_details:
+            kind_filter = "sub-agents"
+        else:
+            kind_filter = "sessions"
         print(f"✅ No active {kind_filter} found")
         return
 
-    kind_label = "Sub-Agent" if show_details else "Session"
+    if channels_only:
+        kind_label = "Channel"
+    elif show_details:
+        kind_label = "Sub-Agent"
+    else:
+        kind_label = "Session"
     print(f"\n🤖 {kind_label} Health Report ({len(sessions)} total)\n")
     
     # Base header columns
@@ -290,14 +309,19 @@ def print_report(sessions, show_details=False, stuck_threshold=10):
         print(line)
 
 
-def watch_mode(subagents_only=False, show_details=False, stuck_threshold=10):
+def watch_mode(subagents_only=False, channels_only=False, show_details=False, stuck_threshold=10):
     """Continuous monitoring mode."""
-    kind_label = "sub-agents" if subagents_only else "sessions"
+    if channels_only:
+        kind_label = "channels"
+    elif subagents_only:
+        kind_label = "sub-agents"
+    else:
+        kind_label = "sessions"
     print(f"👀 Watching {kind_label} (Ctrl+C to exit)...")
     while True:
         subprocess.run(["clear"])
-        sessions = get_sessions(active_minutes=120, subagents_only=subagents_only)
-        print_report(sessions, show_details=show_details, stuck_threshold=stuck_threshold)
+        sessions = get_sessions(active_minutes=120, subagents_only=subagents_only, channels_only=channels_only)
+        print_report(sessions, show_details=show_details, stuck_threshold=stuck_threshold, channels_only=channels_only)
         print(f"\n⏱️  Last check: {datetime.now().strftime('%H:%M:%S')} | Stuck threshold: {stuck_threshold}min")
         time.sleep(30)
 
@@ -307,6 +331,7 @@ def main():
     
     # Parse flags
     subagents_only = "--subagents-only" in args
+    channels_only = "--channels-only" in args
     show_details = "--details" in args
     watch = "--watch" in args
     
@@ -324,6 +349,7 @@ def main():
         print("""
 Options:
     --subagents-only        Show only isolated (spawned) sub-agents
+    --channels-only         Show only Discord channel threads (kind: group)
     --details               Show task prompt preview and model for each agent
     --watch                 Continuous monitoring mode (refreshes every 30s)
     --stuck-threshold N     Set idle minutes before marking as stuck (default: 10)
@@ -331,15 +357,16 @@ Options:
 Examples:
     openclaw-subagent --subagents-only                    # See only spawned agents
     openclaw-subagent --subagents-only --details          # See what each agent is doing
+    openclaw-subagent --channels-only                     # See only Discord channels
     openclaw-subagent --watch --stuck-threshold 30        # Alert if idle >30min
 """)
         return
     
     if watch:
-        watch_mode(subagents_only=subagents_only, show_details=show_details, stuck_threshold=stuck_threshold)
+        watch_mode(subagents_only=subagents_only, channels_only=channels_only, show_details=show_details, stuck_threshold=stuck_threshold)
     else:
-        sessions = get_sessions(active_minutes=60, subagents_only=subagents_only)
-        print_report(sessions, show_details=show_details, stuck_threshold=stuck_threshold)
+        sessions = get_sessions(active_minutes=60, subagents_only=subagents_only, channels_only=channels_only)
+        print_report(sessions, show_details=show_details, stuck_threshold=stuck_threshold, channels_only=channels_only)
 
 
 if __name__ == "__main__":
