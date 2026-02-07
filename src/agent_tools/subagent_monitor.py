@@ -125,14 +125,25 @@ def print_report(sessions):
         return
 
     print(f"\n🤖 Session Health Report ({len(sessions)} total)\n")
-    # Header with fixed widths - total 80 chars to match separator
+    # Header with fixed widths
     header = f"{'ID':<10} {'Kind':<6} {'Status':<8} {'Idle':>7} {'Tokens':>9} {'Channel/Key':<28} Issues"
-    print(header)
-    # Separator matching header length exactly
-    print("-" * len(header))
-
+    
+    # Calculate max width needed (account for long issue strings)
+    max_width = len(header)
+    health_data = []
     for s in sorted(sessions, key=lambda x: x.get("updatedAt", 0), reverse=True):
         health = check_health(s)
+        health_data.append(health)
+        short_name = health["display"][:26] + ".." if len(health["display"]) > 28 else health["display"]
+        issues_str = ", ".join(health["issues"]) if health["issues"] else "-"
+        line = (f"🟢 {health['id']:<8} {health['kind']:<6} {health['status']:<8} "
+                f"{health['idle_min']:.1f}m  {health['total_tokens']:<8} {short_name:<28} {issues_str}")
+        max_width = max(max_width, len(line))
+    
+    print(header)
+    print("-" * max_width)
+
+    for health in health_data:
         status_emoji = {
             "healthy": "🟢",
             "crashed": "🔴",
