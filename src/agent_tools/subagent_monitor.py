@@ -130,6 +130,13 @@ def format_timestamp(ts_ms):
     return dt.strftime("%H:%M:%S")
 
 
+def format_total_tokens(tokens):
+    """Format total tokens for display, handling None."""
+    if tokens is None:
+        return "-"
+    return str(tokens)
+
+
 def format_duration(minutes):
     """Format duration in a readable way."""
     if minutes < 1:
@@ -150,7 +157,7 @@ def check_health(session, stuck_threshold=10):
     key = session.get("key", session.get("sessionKey", "unknown"))
     kind = session.get("kind", "unknown")
     updated_at = session.get("updatedAt", 0)
-    total_tokens = session.get("totalTokens", 0)
+    total_tokens = session.get("totalTokens")  # Can be None
     system_sent = session.get("systemSent", False)
     aborted = session.get("abortedLastRun", False)
     session_id = session.get("sessionId", "-")[:8]
@@ -185,11 +192,11 @@ def check_health(session, stuck_threshold=10):
         issues.append("crashed/aborted")
         status = "crashed"
 
-    if not system_sent and total_tokens == 0:
+    if not system_sent and (total_tokens is None or total_tokens == 0):
         issues.append("never started (no system)")
         status = "stalled"
 
-    if idle_min > 5 and total_tokens > 0:
+    if idle_min > 5 and (total_tokens is not None and total_tokens > 0):
         issues.append(f"idle {format_duration(idle_min)}")
 
     if idle_min > stuck_threshold:
@@ -259,14 +266,16 @@ def print_report(sessions, show_details=False, stuck_threshold=10, channels_only
         
         # Calculate line length for separator
         if show_details:
+            tok_str = format_total_tokens(health['total_tokens'])
             line = (f"🟢 {health['id']:<8} {health['kind']:<6} {health['status']:<8} "
-                    f"{format_duration(health['idle_min']):>7} {health['total_tokens']:<8} "
+                    f"{format_duration(health['idle_min']):>7} {tok_str:<8} "
                     f"{health['model']:<18} {task_preview:<42}")
         else:
             issues_str = ", ".join(health["issues"]) if health["issues"] else "-"
             short_name = health["display"][:26] + ".." if len(health["display"]) > 28 else health["display"]
+            tok_str = format_total_tokens(health['total_tokens'])
             line = (f"🟢 {health['id']:<8} {health['kind']:<6} {health['status']:<8} "
-                    f"{format_duration(health['idle_min']):>7} {health['total_tokens']:<8} "
+                    f"{format_duration(health['idle_min']):>7} {tok_str:<8} "
                     f"{health['model']:<18} {short_name:<28} {issues_str}")
         max_width = max(max_width, len(line))
     
@@ -282,7 +291,7 @@ def print_report(sessions, show_details=False, stuck_threshold=10, channels_only
         }.get(health["status"], "⚪")
 
         idle_str = format_duration(health["idle_min"])
-        tok_str = str(health["total_tokens"])
+        tok_str = format_total_tokens(health["total_tokens"])
 
         if show_details:
             # Detailed view: Task preview instead of channel key
