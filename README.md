@@ -1,3 +1,9 @@
+# ⚠️🚧 UNDER CONSTRUCTION 🚧⚠️
+
+This repository is actively being worked on and is not meant for use until features are completed. Use at your own risk!
+
+---
+
 # Agent Tools
 
 Reusable utilities for AI agents running on OpenClaw or similar agent frameworks. Designed for portability, composability, and clean configuration.
